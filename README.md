@@ -1,5 +1,7 @@
 # color_termial
 make u terminal colored 
+root are red
+normal green
 # install 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/install.sh) 
