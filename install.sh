@@ -207,10 +207,21 @@ fi
 cat <<'EOS'
 
 Готово.
-Открой новую SSH-сессию или выполни:
-  source ~/.bashrc
 
 Удаление:
   rm -f /etc/profile.d/99-kel-color-terminal.sh
   sed -i '\|if \[ -r /etc/profile.d/99-kel-color-terminal.sh \]; then|,+2d' /etc/bash.bashrc /root/.bashrc 2>/dev/null || true
 EOS
+
+if [ -t 0 ] && [ -t 1 ]; then
+  echo
+  echo "Перезапускаю текущую bash-сессию..."
+  exec bash -l
+else
+  cat <<'EOS'
+
+Для применения:
+  exec bash -l
+или открой новую SSH-сессию.
+EOS
+fi
