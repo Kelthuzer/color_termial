@@ -3,8 +3,13 @@ make u terminal colored
 root are red
 normal green
 # install 
+if root
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/install.sh) 
+```
+if no root
+```bash
+curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/install.sh | sudo bash
 ```
 ## preview 
 Before 
