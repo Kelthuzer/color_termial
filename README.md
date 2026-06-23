@@ -19,3 +19,7 @@ After
 <img width="1852" height="795" alt="image" src="https://github.com/user-attachments/assets/628e4652-21ca-448c-913c-250e526b9fbd" />
 
 
+# ble.sh whith interactive
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh)
+```
