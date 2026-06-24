@@ -7,17 +7,11 @@ TARGET_USER=""
 NO_RESTART=0
 TARGETS_DONE=()
 
-log() {
-  echo "[ble-installer] $*"
-}
-
-die() {
-  echo "[ble-installer] ERROR: $*" >&2
-  exit 1
-}
+log() { echo "[ble-installer] $*"; }
+die() { echo "[ble-installer] ERROR: $*" >&2; exit 1; }
 
 usage() {
-  cat <<'EOF'
+  cat <<'EOF_USAGE'
 Usage:
   bash ble.sh
   bash ble.sh --menu
@@ -32,59 +26,34 @@ Usage:
 Examples:
   bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh)
   bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh) --user
-  bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh) --root
-  bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh) --both
-  bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh) --both --no-restart
-EOF
+  sudo bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh) --root
+  sudo bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh) --both
+  sudo bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh) --both --no-restart
+EOF_USAGE
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --menu|--auto|--user|--root|--both|--remove-current)
-      MODE="$1"
-      shift
-      ;;
+      MODE="$1"; shift ;;
     --target)
       [ "$#" -ge 2 ] || die "Missing username after --target"
-      MODE="--target"
-      TARGET_USER="$2"
-      shift 2
-      ;;
+      MODE="--target"; TARGET_USER="$2"; shift 2 ;;
     --target=*)
-      MODE="--target"
-      TARGET_USER="${1#--target=}"
-      shift
-      ;;
+      MODE="--target"; TARGET_USER="${1#--target=}"; shift ;;
     --no-restart)
-      NO_RESTART=1
-      shift
-      ;;
+      NO_RESTART=1; shift ;;
     -h|--help)
-      usage
-      exit 0
-      ;;
+      usage; exit 0 ;;
     *)
-      usage
-      die "Unknown argument: $1"
-      ;;
+      usage; die "Unknown argument: $1" ;;
   esac
 done
 
-need_cmd() {
-  command -v "$1" >/dev/null 2>&1
-}
-
-user_exists() {
-  getent passwd "$1" >/dev/null 2>&1
-}
-
-get_home() {
-  getent passwd "$1" | cut -d: -f6
-}
-
-get_group() {
-  id -gn "$1"
-}
+need_cmd() { command -v "$1" >/dev/null 2>&1; }
+user_exists() { getent passwd "$1" >/dev/null 2>&1; }
+get_home() { getent passwd "$1" | cut -d: -f6; }
+get_group() { id -gn "$1"; }
 
 read_tty() {
   local prompt="$1"
@@ -196,8 +165,9 @@ clean_bashrc_blesh() {
     BEGIN {skip=0}
     /^# >>> ble\.sh >>>$/ {skip=1; next}
     /^# <<< ble\.sh <<<$/{skip=0; next}
+    skip {next}
     /blesh\/ble\.sh/ {next}
-    {if (!skip) print}
+    {print}
   ' "$bashrc" > "$tmp"
 
   cat "$tmp" > "$bashrc"
@@ -207,14 +177,19 @@ clean_bashrc_blesh() {
 append_bashrc_blesh() {
   local bashrc="$1"
 
-  cat >> "$bashrc" <<'EOF'
+  cat >> "$bashrc" <<'EOF_BLE_BLOCK'
 
 # >>> ble.sh >>>
 if [[ $- == *i* && -r "$HOME/.local/share/blesh/ble.sh" ]]; then
   source "$HOME/.local/share/blesh/ble.sh"
 fi
+
+# Re-apply Kel color terminal after ble.sh
+if [[ $- == *i* && -r /etc/profile.d/99-kel-color-terminal.sh ]]; then
+  source /etc/profile.d/99-kel-color-terminal.sh
+fi
 # <<< ble.sh <<<
-EOF
+EOF_BLE_BLOCK
 }
 
 install_for_user() {
@@ -308,7 +283,7 @@ current_shell_user_is_target() {
 restart_shell_if_needed() {
   if [ "$NO_RESTART" -eq 1 ]; then
     log "Auto restart disabled"
-    log "Run manually: exec bash"
+    log "Run manually: exec bash -l"
     return 0
   fi
 
@@ -318,17 +293,12 @@ restart_shell_if_needed() {
 
   if ! current_shell_user_is_target; then
     log "Current shell user is $(id -un), installed for: ${TARGETS_DONE[*]}"
-    log "Open a new session for target user or run: exec bash under that user"
+    log "Open a new session for target user or run: exec bash -l under that user"
     return 0
   fi
 
-  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
-    log "Restarting current Bash session..."
-    exec </dev/tty >/dev/tty 2>&1 bash -l
-  fi
-
-  log "No interactive TTY detected"
-  log "Run manually: exec bash"
+  log "Restarting current Bash session..."
+  exec bash -l
 }
 
 install_user_mode() {
@@ -374,21 +344,26 @@ install_target_mode() {
 menu() {
   local choice
   local user
+  local detected_user
+
+  [ -r /dev/tty ] || die "Interactive menu requires TTY. Use --user, --root, --both or --target USER."
 
   while true; do
-    cat >/dev/tty <<EOF
+    detected_user="$(detect_normal_user 2>/dev/null || echo "not found")"
+
+    cat >/dev/tty <<EOF_MENU
 
 ble.sh installer
 
 1) Install for current user ($(id -un))
-2) Install for detected normal user ($(detect_normal_user 2>/dev/null || echo "not found"))
+2) Install for detected normal user ($detected_user)
 3) Install for root
 4) Install for root + detected normal user
 5) Install for custom user
 6) Remove ble.sh loader from current user's .bashrc
 0) Exit
 
-EOF
+EOF_MENU
 
     read_tty "Select option: " choice
 
@@ -396,71 +371,45 @@ EOF
       1)
         install_deps
         install_for_user "$(id -un)"
-        break
-        ;;
+        break ;;
       2)
         user="$(detect_normal_user || true)"
         [ -n "$user" ] || die "Cannot detect normal user"
         install_deps
         install_for_user "$user"
-        break
-        ;;
+        break ;;
       3)
         install_root_mode
-        break
-        ;;
+        break ;;
       4)
         install_both_mode
-        break
-        ;;
+        break ;;
       5)
         read_tty "Username: " user
         [ -n "$user" ] || die "Empty username"
         TARGET_USER="$user"
         install_target_mode
-        break
-        ;;
+        break ;;
       6)
         remove_for_user "$(id -un)"
-        break
-        ;;
+        break ;;
       0)
-        exit 0
-        ;;
+        exit 0 ;;
       *)
-        echo "Invalid option" >/dev/tty
-        ;;
+        echo "Invalid option" >/dev/tty ;;
     esac
   done
 }
 
 case "$MODE" in
-  --menu)
-    menu
-    ;;
-  --auto)
-    install_deps
-    install_for_user "$(id -un)"
-    ;;
-  --user)
-    install_user_mode
-    ;;
-  --root)
-    install_root_mode
-    ;;
-  --both)
-    install_both_mode
-    ;;
-  --target)
-    install_target_mode
-    ;;
-  --remove-current)
-    remove_for_user "$(id -un)"
-    ;;
-  *)
-    usage
-    die "Unknown mode: $MODE"
-    ;;
+  --menu) menu ;;
+  --auto) install_deps; install_for_user "$(id -un)" ;;
+  --user) install_user_mode ;;
+  --root) install_root_mode ;;
+  --both) install_both_mode ;;
+  --target) install_target_mode ;;
+  --remove-current) remove_for_user "$(id -un)" ;;
+  *) usage; die "Unknown mode: $MODE" ;;
 esac
 
 log "Done"
