@@ -4,9 +4,9 @@ set -Eeuo pipefail
 PROFILE_SNIPPET="/etc/profile.d/99-kel-color-terminal.sh"
 TS="$(date +%Y%m%d-%H%M%S)"
 
-log() { printf '\033[1;32m[OK]\033[0m %s\n' "$*"; }
+log()  { printf '\033[1;32m[OK]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[WARN]\033[0m %s\n' "$*"; }
-err() { printf '\033[1;31m[ERROR]\033[0m %s\n' "$*" >&2; }
+err()  { printf '\033[1;31m[ERROR]\033[0m %s\n' "$*" >&2; }
 
 if [ "$(id -u)" -ne 0 ]; then
   err "Запусти от root: sudo bash install.sh"
@@ -32,8 +32,24 @@ backup_file() {
 
 remove_source_block() {
   local f="$1"
+  local tmp
+
   [ -e "$f" ] || return 0
-  sed -i '\|if \[ -r /etc/profile.d/99-kel-color-terminal.sh \]; then|,+2d' "$f"
+  tmp="${f}.tmp.$$"
+
+  awk '
+    BEGIN {skip=0; legacy=0}
+    /^# >>> kel-color-terminal >>>$/ {skip=1; next}
+    /^# <<< kel-color-terminal <<<$/{skip=0; next}
+    skip {next}
+    /if \[ -r \/etc\/profile\.d\/99-kel-color-terminal\.sh \]; then/ {legacy=2; next}
+    legacy > 0 {legacy--; next}
+    /\/etc\/profile\.d\/99-kel-color-terminal\.sh/ {next}
+    {print}
+  ' "$f" > "$tmp"
+
+  cat "$tmp" > "$f"
+  rm -f "$tmp"
 }
 
 append_source_block() {
@@ -50,9 +66,12 @@ append_source_block() {
   remove_source_block "$f"
 
   cat >> "$f" <<'EOS'
+
+# >>> kel-color-terminal >>>
 if [ -r /etc/profile.d/99-kel-color-terminal.sh ]; then
   . /etc/profile.d/99-kel-color-terminal.sh
 fi
+# <<< kel-color-terminal <<<
 EOS
 
   [ -n "$owner" ] && chown "$owner" "$f" || true
@@ -71,7 +90,6 @@ if [ "$BASH" ]; then
     . ~/.bashrc
   fi
 fi
-
 mesg n 2> /dev/null || true
 EOS
     [ -n "$owner" ] && chown "$owner" "$profile" || true
@@ -86,6 +104,7 @@ EOS
 
   backup_file "$profile"
   cat >> "$profile" <<'EOS'
+
 if [ "$BASH" ]; then
   if [ -f ~/.bashrc ]; then
     . ~/.bashrc
@@ -96,12 +115,55 @@ EOS
   log "Добавлено подключение ~/.bashrc в $profile"
 }
 
+repair_existing_blesh_block() {
+  local bashrc="$1"
+  local owner="${2:-}"
+  local mode="${3:-0644}"
+  local has_blesh=0
+  local home_dir
+
+  [ -e "$bashrc" ] || return 0
+
+  if grep -q 'blesh/ble\.sh\|ble\.sh' "$bashrc" 2>/dev/null; then
+    has_blesh=1
+  fi
+
+  [ "$has_blesh" -eq 1 ] || return 0
+
+  backup_file "$bashrc"
+
+  sed -i '/# >>> ble\.sh >>>/,/# <<< ble\.sh <<</d' "$bashrc"
+  sed -i '/blesh\/ble\.sh/d' "$bashrc"
+
+  cat >> "$bashrc" <<'EOS'
+
+# >>> ble.sh >>>
+if [[ $- == *i* && -r "$HOME/.local/share/blesh/ble.sh" ]]; then
+  source "$HOME/.local/share/blesh/ble.sh"
+fi
+
+# Re-apply Kel color terminal after ble.sh
+if [[ $- == *i* && -r /etc/profile.d/99-kel-color-terminal.sh ]]; then
+  source /etc/profile.d/99-kel-color-terminal.sh
+fi
+# <<< ble.sh <<<
+EOS
+
+  [ -n "$owner" ] && chown "$owner" "$bashrc" || true
+  chmod "$mode" "$bashrc" || true
+  log "Исправлена совместимость ble.sh + color terminal: $bashrc"
+}
+
 install -d -m 0755 /etc/profile.d
 backup_file "$PROFILE_SNIPPET"
 cat > "$PROFILE_SNIPPET" <<'EOS'
+# Kel color terminal profile.
+# Safe for interactive Bash only.
+
 if [ -z "${BASH_VERSION:-}" ]; then
   return 0 2>/dev/null || exit 0
 fi
+
 case "$-" in
   *i*) ;;
   *) return 0 2>/dev/null || exit 0 ;;
@@ -154,7 +216,7 @@ alias ping='ping -4'
 
 killtty() {
   if [ -z "${1:-}" ]; then
-    echo "usage: killtty <pts_number>" >&2
+    echo "usage: killtty <N>" >&2
     return 2
   fi
   pkill -9 -t "pts/$1"
@@ -177,6 +239,7 @@ __kel_color_prompt() {
     PS1="${reset}[${time_c}\t${reset}]:${reset}[${user_c}\u${reset}@${host_c}\H${reset}]:${reset}[${path_c}\w${reset}]: ${user_c}>> ${reset}"
   fi
 }
+
 __kel_color_prompt
 unset -f __kel_color_prompt
 
@@ -188,13 +251,16 @@ log "Установлен профиль: $PROFILE_SNIPPET"
 append_source_block "/etc/bash.bashrc" "" "0644"
 append_source_block "/root/.bashrc" "root:root" "0644"
 ensure_profile_sources_bashrc "/root/.profile" "root:root"
+repair_existing_blesh_block "/root/.bashrc" "root:root" "0644"
 
 if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER}" != "root" ]; then
   user_home="$(getent passwd "$SUDO_USER" | cut -d: -f6 || true)"
   user_group="$(id -gn "$SUDO_USER" 2>/dev/null || echo "$SUDO_USER")"
+
   if [ -n "$user_home" ] && [ -d "$user_home" ]; then
     append_source_block "$user_home/.bashrc" "$SUDO_USER:$user_group" "0644"
     ensure_profile_sources_bashrc "$user_home/.profile" "$SUDO_USER:$user_group"
+    repair_existing_blesh_block "$user_home/.bashrc" "$SUDO_USER:$user_group" "0644"
   fi
 fi
 
@@ -208,20 +274,18 @@ cat <<'EOS'
 
 Готово.
 
-Удаление:
+Удаление color terminal:
   rm -f /etc/profile.d/99-kel-color-terminal.sh
-  sed -i '\|if \[ -r /etc/profile.d/99-kel-color-terminal.sh \]; then|,+2d' /etc/bash.bashrc /root/.bashrc 2>/dev/null || true
-EOS
-
-if [ -t 0 ] && [ -t 1 ]; then
-  echo
-  echo "Перезапускаю текущую bash-сессию..."
-  exec bash -l
-else
-  cat <<'EOS'
+  sed -i '/# >>> kel-color-terminal >>>/,/# <<< kel-color-terminal <<</d' /etc/bash.bashrc /root/.bashrc 2>/dev/null || true
 
 Для применения:
   exec bash -l
-или открой новую SSH-сессию.
+
 EOS
+
+if [ -t 0 ] && [ -t 1 ]; then
+  echo "Перезапускаю текущую bash-сессию..."
+  exec bash -l
+else
+  echo "Открой новую SSH-сессию или выполни: exec bash -l"
 fi
