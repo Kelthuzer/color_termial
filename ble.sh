@@ -4,7 +4,7 @@ set -Eeuo pipefail
 REPO_URL="https://github.com/akinomyoga/ble.sh.git"
 MODE="--menu"
 TARGET_USER=""
-NO_RESTART=0
+RESTART=0
 TARGETS_DONE=()
 
 log() { echo "[ble-installer] $*"; }
@@ -21,6 +21,7 @@ Usage:
   bash ble.sh --both
   bash ble.sh --target USER
   bash ble.sh --remove-current
+  bash ble.sh --restart
   bash ble.sh --no-restart
 
 Examples:
@@ -28,7 +29,7 @@ Examples:
   bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh) --user
   sudo bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh) --root
   sudo bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh) --both
-  sudo bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh) --both --no-restart
+  sudo bash <(curl -Ls https://raw.githubusercontent.com/Kelthuzer/color_termial/main/ble.sh) --both --restart
 EOF_USAGE
 }
 
@@ -41,8 +42,10 @@ while [ "$#" -gt 0 ]; do
       MODE="--target"; TARGET_USER="$2"; shift 2 ;;
     --target=*)
       MODE="--target"; TARGET_USER="${1#--target=}"; shift ;;
+    --restart)
+      RESTART=1; shift ;;
     --no-restart)
-      NO_RESTART=1; shift ;;
+      RESTART=0; shift ;;
     -h|--help)
       usage; exit 0 ;;
     *)
@@ -111,7 +114,7 @@ install_deps_root() {
 install_deps() {
   local missing=0
 
-  for cmd in git make gawk; do
+  for cmd in git make gawk mktemp; do
     if ! need_cmd "$cmd"; then
       missing=1
     fi
@@ -155,23 +158,34 @@ install_deps() {
   fi
 }
 
-clean_bashrc_blesh() {
+remove_managed_block() {
+  local f="$1"
+  local begin_re="$2"
+  local end_re="$3"
+  local tmp
+
+  [ -e "$f" ] || return 0
+  tmp="${f}.tmp.$$"
+
+  awk -v begin_re="$begin_re" -v end_re="$end_re" '
+    $0 ~ begin_re {skip=1; next}
+    $0 ~ end_re {skip=0; next}
+    !skip {print}
+  ' "$f" > "$tmp"
+
+  cat "$tmp" > "$f"
+  rm -f "$tmp"
+}
+
+clean_bashrc_kel_blesh() {
   local bashrc="$1"
-  local tmp="${bashrc}.tmp.$$"
 
   [ -f "$bashrc" ] || touch "$bashrc"
 
-  awk '
-    BEGIN {skip=0}
-    /^# >>> ble\.sh >>>$/ {skip=1; next}
-    /^# <<< ble\.sh <<<$/{skip=0; next}
-    skip {next}
-    /blesh\/ble\.sh/ {next}
-    {print}
-  ' "$bashrc" > "$tmp"
-
-  cat "$tmp" > "$bashrc"
-  rm -f "$tmp"
+  # Удаляем только блоки, которыми управляет этот установщик.
+  # Официальные/ручные блоки "# >>> ble.sh >>>" не трогаем.
+  remove_managed_block "$bashrc" '^# >>> kel-ble\.sh >>>$' '^# <<< kel-ble\.sh <<<$'
+  remove_managed_block "$bashrc" '^# >>> kel-color-terminal-after-ble >>>$' '^# <<< kel-color-terminal-after-ble <<<$'
 }
 
 append_bashrc_blesh() {
@@ -179,16 +193,17 @@ append_bashrc_blesh() {
 
   cat >> "$bashrc" <<'EOF_BLE_BLOCK'
 
-# >>> ble.sh >>>
+# >>> kel-ble.sh >>>
 if [[ $- == *i* && -r "$HOME/.local/share/blesh/ble.sh" ]]; then
   source "$HOME/.local/share/blesh/ble.sh"
 fi
+# <<< kel-ble.sh <<<
 
-# Re-apply Kel color terminal after ble.sh
+# >>> kel-color-terminal-after-ble >>>
 if [[ $- == *i* && -r /etc/profile.d/99-kel-color-terminal.sh ]]; then
   source /etc/profile.d/99-kel-color-terminal.sh
 fi
-# <<< ble.sh <<<
+# <<< kel-color-terminal-after-ble <<<
 EOF_BLE_BLOCK
 }
 
@@ -206,7 +221,6 @@ install_for_user() {
   group="$(get_group "$user")"
   prefix="$home/.local"
   bashrc="$home/.bashrc"
-  build_dir="/tmp/blesh-build-${user}-$$"
 
   [ -n "$home" ] || die "Cannot detect home for user: $user"
   [ -d "$home" ] || die "Home directory does not exist: $home"
@@ -215,18 +229,20 @@ install_for_user() {
   log "Home: $home"
   log "Prefix: $prefix"
 
-  rm -rf "$build_dir"
+  as_user "$user" mkdir -p "$prefix" "$home/.cache"
+  build_dir="$(as_user "$user" mktemp -d "$home/.cache/blesh-build.XXXXXX")"
 
-  as_user "$user" mkdir -p "$prefix"
   as_user "$user" git clone --recursive "$REPO_URL" "$build_dir"
   as_user "$user" make -C "$build_dir" install PREFIX="$prefix"
 
-  clean_bashrc_blesh "$bashrc"
+  [ -f "$bashrc" ] || touch "$bashrc"
+  clean_bashrc_kel_blesh "$bashrc"
   append_bashrc_blesh "$bashrc"
 
   if [ "$(id -u)" -eq 0 ]; then
     chown "$user:$group" "$bashrc"
-    chown -R "$user:$group" "$prefix" 2>/dev/null || true
+    chown "$user:$group" "$prefix" 2>/dev/null || true
+    chown -R "$user:$group" "$prefix/share/blesh" 2>/dev/null || true
   fi
 
   rm -rf "$build_dir"
@@ -256,13 +272,13 @@ remove_for_user() {
     return 0
   }
 
-  clean_bashrc_blesh "$bashrc"
+  clean_bashrc_kel_blesh "$bashrc"
 
   if [ "$(id -u)" -eq 0 ]; then
     chown "$user:$group" "$bashrc"
   fi
 
-  log "Removed ble.sh loader from $bashrc"
+  log "Removed Kel ble.sh loader from $bashrc"
 }
 
 current_shell_user_is_target() {
@@ -281,8 +297,8 @@ current_shell_user_is_target() {
 }
 
 restart_shell_if_needed() {
-  if [ "$NO_RESTART" -eq 1 ]; then
-    log "Auto restart disabled"
+  if [ "$RESTART" -ne 1 ] || [ "${KEL_NO_RESTART:-0}" = "1" ]; then
+    log "Shell restart skipped"
     log "Run manually: exec bash -l"
     return 0
   fi
@@ -297,8 +313,13 @@ restart_shell_if_needed() {
     return 0
   fi
 
-  log "Restarting current Bash session..."
-  exec bash -l
+  if [ -t 0 ] && [ -t 1 ] && [ -t 2 ]; then
+    log "Restarting current Bash session..."
+    exec bash -l
+  fi
+
+  log "No interactive TTY detected"
+  log "Run manually: exec bash -l"
 }
 
 install_user_mode() {
@@ -360,7 +381,7 @@ ble.sh installer
 3) Install for root
 4) Install for root + detected normal user
 5) Install for custom user
-6) Remove ble.sh loader from current user's .bashrc
+6) Remove Kel ble.sh loader from current user's .bashrc
 0) Exit
 
 EOF_MENU
