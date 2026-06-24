@@ -24,32 +24,40 @@ fi
 
 backup_file() {
   local f="$1"
+
   if [ -e "$f" ] && [ ! -e "${f}.bak-${TS}" ]; then
     cp -a "$f" "${f}.bak-${TS}"
     log "Бэкап: ${f}.bak-${TS}"
   fi
 }
 
-remove_source_block() {
+remove_managed_block() {
   local f="$1"
+  local begin_re="$2"
+  local end_re="$3"
   local tmp
 
   [ -e "$f" ] || return 0
   tmp="${f}.tmp.$$"
 
-  awk '
-    BEGIN {skip=0; legacy=0}
-    /^# >>> kel-color-terminal >>>$/ {skip=1; next}
-    /^# <<< kel-color-terminal <<<$/{skip=0; next}
-    skip {next}
-    /if \[ -r \/etc\/profile\.d\/99-kel-color-terminal\.sh \]; then/ {legacy=2; next}
-    legacy > 0 {legacy--; next}
-    /\/etc\/profile\.d\/99-kel-color-terminal\.sh/ {next}
-    {print}
+  awk -v begin_re="$begin_re" -v end_re="$end_re" '
+    $0 ~ begin_re {skip=1; next}
+    $0 ~ end_re {skip=0; next}
+    !skip {print}
   ' "$f" > "$tmp"
 
   cat "$tmp" > "$f"
   rm -f "$tmp"
+}
+
+remove_source_block() {
+  local f="$1"
+
+  [ -e "$f" ] || return 0
+
+  # Удаляем только управляемый блок color-terminal.
+  # Чужие строки с /etc/profile.d/99-kel-color-terminal.sh вне нашего блока не трогаем.
+  remove_managed_block "$f" '^# >>> kel-color-terminal >>>$' '^# <<< kel-color-terminal <<<$'
 }
 
 append_source_block() {
@@ -59,7 +67,6 @@ append_source_block() {
 
   if [ ! -e "$f" ]; then
     install -m "$mode" /dev/null "$f"
-    [ -n "$owner" ] && chown "$owner" "$f" || true
   fi
 
   backup_file "$f"
@@ -111,7 +118,9 @@ if [ "$BASH" ]; then
   fi
 fi
 EOS
+
   [ -n "$owner" ] && chown "$owner" "$profile" || true
+  chmod 0644 "$profile" || true
   log "Добавлено подключение ~/.bashrc в $profile"
 }
 
@@ -119,43 +128,36 @@ repair_existing_blesh_block() {
   local bashrc="$1"
   local owner="${2:-}"
   local mode="${3:-0644}"
-  local has_blesh=0
-  local home_dir
 
   [ -e "$bashrc" ] || return 0
 
-  if grep -q 'blesh/ble\.sh\|ble\.sh' "$bashrc" 2>/dev/null; then
-    has_blesh=1
-  fi
-
-  [ "$has_blesh" -eq 1 ] || return 0
+  # Если ble.sh не упоминается, отдельный compatibility-блок не нужен.
+  grep -Eq 'blesh/ble\.sh|ble\.sh' "$bashrc" 2>/dev/null || return 0
 
   backup_file "$bashrc"
 
-  sed -i '/# >>> ble\.sh >>>/,/# <<< ble\.sh <<</d' "$bashrc"
-  sed -i '/blesh\/ble\.sh/d' "$bashrc"
+  # Важно: не удаляем и не редактируем чужой блок "# >>> ble.sh >>>".
+  # Управляем только своим отдельным compatibility-блоком.
+  remove_managed_block "$bashrc" '^# >>> kel-color-terminal-after-ble >>>$' '^# <<< kel-color-terminal-after-ble <<<$'
 
   cat >> "$bashrc" <<'EOS'
 
-# >>> ble.sh >>>
-if [[ $- == *i* && -r "$HOME/.local/share/blesh/ble.sh" ]]; then
-  source "$HOME/.local/share/blesh/ble.sh"
-fi
-
-# Re-apply Kel color terminal after ble.sh
+# >>> kel-color-terminal-after-ble >>>
+# Re-apply Kel color terminal after ble.sh without touching user ble.sh settings.
 if [[ $- == *i* && -r /etc/profile.d/99-kel-color-terminal.sh ]]; then
   source /etc/profile.d/99-kel-color-terminal.sh
 fi
-# <<< ble.sh <<<
+# <<< kel-color-terminal-after-ble <<<
 EOS
 
   [ -n "$owner" ] && chown "$owner" "$bashrc" || true
   chmod "$mode" "$bashrc" || true
-  log "Исправлена совместимость ble.sh + color terminal: $bashrc"
+  log "Обеспечена совместимость ble.sh + color terminal: $bashrc"
 }
 
 install -d -m 0755 /etc/profile.d
 backup_file "$PROFILE_SNIPPET"
+
 cat > "$PROFILE_SNIPPET" <<'EOS'
 # Kel color terminal profile.
 # Safe for interactive Bash only.
@@ -245,6 +247,7 @@ unset -f __kel_color_prompt
 
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
 EOS
+
 chmod 0644 "$PROFILE_SNIPPET"
 log "Установлен профиль: $PROFILE_SNIPPET"
 
@@ -277,13 +280,16 @@ cat <<'EOS'
 Удаление color terminal:
   rm -f /etc/profile.d/99-kel-color-terminal.sh
   sed -i '/# >>> kel-color-terminal >>>/,/# <<< kel-color-terminal <<</d' /etc/bash.bashrc /root/.bashrc 2>/dev/null || true
+  sed -i '/# >>> kel-color-terminal-after-ble >>>/,/# <<< kel-color-terminal-after-ble <<</d' /root/.bashrc /home/*/.bashrc 2>/dev/null || true
 
 Для применения:
   exec bash -l
 
 EOS
 
-if [ -t 0 ] && [ -t 1 ]; then
+if [ "${KEL_NO_RESTART:-0}" = "1" ]; then
+  echo "Автоперезапуск отключён. Выполни: exec bash -l"
+elif [ -t 0 ] && [ -t 1 ] && [ -t 2 ]; then
   echo "Перезапускаю текущую bash-сессию..."
   exec bash -l
 else
