@@ -4,7 +4,7 @@ set -Eeuo pipefail
 REPO_URL="https://github.com/akinomyoga/ble.sh.git"
 MODE="--menu"
 TARGET_USER=""
-RESTART=0
+RESTART=1
 TARGETS_DONE=()
 
 log() { echo "[ble-installer] $*"; }
